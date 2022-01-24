@@ -16,10 +16,10 @@ namespace Functions.Hue
   public static class HueController
   {
     // Get values from https://developers.meethue.com/my-apps/
-    static string _appId = Environment.GetEnvironmentVariable("HueAppId");
+    static string _appId = Environment.GetEnvironmentVariable("HueAppId") ?? "azure";
     private static string _clientId = Environment.GetEnvironmentVariable("HueClientId");
     static string _clientSecret = Environment.GetEnvironmentVariable("HueClientSecret");
-    static string _instanceId = Environment.GetEnvironmentVariable("HueInstanceId");
+    static string _instanceId = Environment.GetEnvironmentVariable("HueInstanceId") ?? "PhilipsHue0";
     public static IRemoteAuthenticationClient _authClient = new RemoteAuthenticationClient(_clientId, _clientSecret, _appId);
     public static RemoteHueClient _hueClient;
     private static AccessTokenResponse _lastToken;
