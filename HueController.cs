@@ -10,6 +10,7 @@ using Q42.HueApi;
 using Q42.HueApi.Interfaces;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Q42.HueApi.Models;
+using Q42.HueApi.Models.Groups;
 
 namespace Functions.Hue
 {
@@ -37,8 +38,21 @@ namespace Functions.Hue
     }
 
     [FunctionName("InitializeAuthentication")]
-    public static async Task<IActionResult> InitializeAuthentication(
+    public static IActionResult InitializeAuthentication(
             [HttpTrigger(AuthorizationLevel.Function, "get", Route = null)] HttpRequest req,
+            [DurableClient] IDurableEntityClient client,
+            ILogger log)
+    {
+      var authCodeUrl = _authClient.BuildAuthorizeUri("initialize", "azure_function", "Azure Function");
+      var response = $"Visit '{authCodeUrl.AbsoluteUri}' to retrieve an authorization code.";
+      log.LogWarning(response);
+
+      return new RedirectResult(authCodeUrl.AbsoluteUri);
+    }
+
+    [FunctionName("RedeemCode")]
+    public static async Task<IActionResult> RedeemCode(
+            [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = null)] HttpRequest req,
             [DurableClient] IDurableEntityClient client,
             ILogger log)
     {
@@ -46,26 +60,21 @@ namespace Functions.Hue
 
       if (string.IsNullOrEmpty(authCode))
       {
-        var authCodeUrl = _authClient.BuildAuthorizeUri("initialize", "azure_function", "Azure Function");
-        var response = $"Visit '{authCodeUrl.AbsoluteUri}' to retrieve an authorization code.";
-        log.LogWarning(response);
-
-        return new RedirectResult(authCodeUrl.AbsoluteUri);
+        log.LogWarning("No auth code provided.");
+        return new BadRequestResult();
       }
-      else
+      
+      var accessToken = await _authClient.GetToken(authCode);
+
+      if (accessToken.Expires_in == 0)
       {
-        var accessToken = await _authClient.GetToken(authCode);
-
-        if (accessToken.Expires_in == 0)
-        {
-          throw new SystemException("Could not get token.");
-        }
-
-        var entityId = new EntityId(nameof(HueState), _instanceId);
-        await client.SignalEntityAsync<IHueState>(entityId, proxy => proxy.SetAccessToken(accessToken));
-
-        return new OkObjectResult("OAuth authorization flow completed.");
+        throw new SystemException("Could not get token.");
       }
+
+      var entityId = new EntityId(nameof(HueState), _instanceId);
+      await client.SignalEntityAsync<IHueState>(entityId, proxy => proxy.SetAccessToken(accessToken));
+
+      return new OkObjectResult("OAuth authorization flow completed.");
     }
 
     public static async Task<IActionResult> ConnectToBridge(
@@ -79,7 +88,7 @@ namespace Functions.Hue
       if (!state.EntityExists)
       {
         log.LogWarning("No access token found. Run 'InitializeAuthentication' to start OAuth flow.");
-        var result = await InitializeAuthentication(req, client, log);
+        var result = InitializeAuthentication(req, client, log);
         return result;
       }
 
@@ -107,7 +116,7 @@ namespace Functions.Hue
       if (bridges == null)
       {
         log.LogWarning("No bridges found. Run 'InitializeAuthentication' to start OAuth flow.");
-        var result = await InitializeAuthentication(req, client, log);
+        var result = InitializeAuthentication(req, client, log);
         return result;
       }
 
@@ -132,9 +141,10 @@ namespace Functions.Hue
       return new OkObjectResult("Connection to bridge established.");
     }
 
-    [FunctionName("TestLights")]
-    public static async Task<IActionResult> TestLights(
-        [HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = null)] HttpRequest req,
+    [FunctionName("SetSensorState")]
+    public static async Task<IActionResult> SetSensorState(
+        [HttpTrigger(AuthorizationLevel.Function, "get", Route = "SetSensorState/{state}")] HttpRequest req,
+        string state,
         [DurableClient] IDurableEntityClient client,
         ILogger log)
     {
@@ -147,11 +157,25 @@ namespace Functions.Hue
         }
       }
 
-      //Turn all lights on
-      var lightResult = await _hueClient.SendCommandAsync(new LightCommand().TurnOn());
-      lightResult = await _hueClient.SendCommandAsync(new LightCommand().TurnOff());
+      var results = new HueResults();
 
-      return lightResult.Errors.Any() ? new BadRequestObjectResult(lightResult.Errors) : new OkObjectResult("OK");
+      // Begin of Hue controller logic
+
+      var sensors = await _hueClient.GetSensorsAsync();
+
+      var config = new SensorConfig()
+      {
+        On = "On".Equals(state, StringComparison.OrdinalIgnoreCase)
+      };
+
+      sensors
+        .Where(s => s.ModelId == "SML001" && s.Type == "ZLLPresence")
+        .ToList()
+        .ForEach(s => results.AddRange(_hueClient.ChangeSensorConfigAsync(s.Id, config).Result));
+
+      // End of Hue controller logic
+
+      return results.Errors.Any() ? new BadRequestObjectResult(results.Errors) : new OkObjectResult("OK");
     }
 
     public static Task<string> GetValidToken()
