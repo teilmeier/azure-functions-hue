@@ -3,7 +3,7 @@ name: Build + Deploy Hue Controller
 on:
   push:
     branches:
-      - master
+      - main
     paths-ignore:
       - .github/**
   workflow_dispatch:
@@ -37,7 +37,7 @@ jobs:
         path: |
           ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output
     - name: Create tag
-      if: ${{ github.ref_name == 'master' }}
+      if: ${{ github.ref_name == 'main' }}
       uses: actions/github-script@v5
       with:
         script: |
